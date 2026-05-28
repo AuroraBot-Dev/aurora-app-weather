@@ -1,4 +1,9 @@
 {
-  "greeting": "hello from example",
-  "emit_startup_event": true
+  "default_city": "北京",
+  "language": "zh",
+  "emit_event": true,
+  "request_timeout_seconds": 8.0,
+  "city_aliases": {
+    "宜兴": "Yixing"
+  }
 }
