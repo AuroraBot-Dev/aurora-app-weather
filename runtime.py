@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -68,7 +69,21 @@ _DEFAULT_CITY_ALIASES: dict[str, str] = {
     "宜兴": "Yixing",
 }
 
-_CITY_SUFFIXES: tuple[str, ...] = ("市", "县", "区", "镇", "乡")
+_CITY_SUFFIXES: tuple[str, ...] = (
+    "经济技术开发区",
+    "经济开发区",
+    "开发区",
+    "高新区",
+    "新区",
+    "工业园区",
+    "产业园区",
+    "园区",
+    "市",
+    "县",
+    "区",
+    "镇",
+    "乡",
+)
 
 
 class WeatherApplication:
@@ -81,14 +96,14 @@ class WeatherApplication:
         city_aliases: dict[str, str] | None = None,
     ) -> None:
         self._api: PlatformAPI | None = None
-        self._default_city = default_city.strip() or "北京"
+        self._default_city = _clean_city_text(default_city) or "北京"
         self._language = language.strip() or "zh"
         self._emit_event = emit_event
         self._timeout_seconds = max(1.0, float(request_timeout_seconds))
         merged_aliases: dict[str, str] = dict(_DEFAULT_CITY_ALIASES)
         if isinstance(city_aliases, dict):
             for key, value in city_aliases.items():
-                k = _normalize_city_name(str(key))
+                k = _canonical_city_key(str(key))
                 v = str(value).strip()
                 if k and v:
                     merged_aliases[k] = v
@@ -119,7 +134,9 @@ class WeatherApplication:
         emit_event: bool | None = None,
     ) -> dict[str, object]:
         api = self._require_api()
-        target_city = _normalize_city_name(city) or _normalize_city_name(self._default_city)
+        requested_city = _clean_city_text(city)
+        default_city = _clean_city_text(self._default_city)
+        target_city = requested_city or default_city
         if not target_city:
             return {"ok": False, "error": "city 不能为空"}
 
@@ -172,18 +189,41 @@ class WeatherApplication:
         }
 
     async def _geocode_city(self, city: str) -> _GeoLocation:
-        normalized = _normalize_city_name(city)
-        query_name = self._city_aliases.get(normalized, normalized)
-        results = await self._geocode_results(query_name)
-        if not results and query_name != normalized:
-            results = await self._geocode_results(normalized)
+        cleaned = _clean_city_text(city)
+        if not cleaned:
+            raise LookupError("city 不能为空")
+
+        canonical = _canonical_city_key(cleaned)
+        candidates: list[str] = []
+        candidates.append(cleaned)
+        cleaned_no_space = cleaned.replace(" ", "")
+        if cleaned_no_space and cleaned_no_space not in candidates:
+            candidates.append(cleaned_no_space)
+        if canonical and canonical not in candidates:
+            candidates.append(canonical)
+        canonical_no_space = canonical.replace(" ", "") if canonical else ""
+        if canonical_no_space and canonical_no_space not in candidates:
+            candidates.append(canonical_no_space)
+        alias = self._city_aliases.get(canonical, "") if canonical else ""
+        if alias and alias not in candidates:
+            candidates.append(alias)
+
+        results: list[dict[str, Any]] = []
+        tried: list[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            tried.append(candidate)
+            results = await self._geocode_results(candidate)
+            if results:
+                break
         if not results:
-            raise LookupError(f"未找到城市: {city}")
+            raise LookupError(f"未找到城市: {cleaned} (tried={', '.join(tried)})")
 
         first = results[0]
         latitude = float(first.get("latitude"))
         longitude = float(first.get("longitude"))
-        name = normalized if _has_cjk(normalized) else (str(first.get("name", "")).strip() or normalized)
+        name = cleaned if _has_cjk(cleaned) else (str(first.get("name", "")).strip() or cleaned)
         country = str(first.get("country", "")).strip()
         admin1 = str(first.get("admin1", "")).strip()
         timezone = str(first.get("timezone", "")).strip()
@@ -248,6 +288,7 @@ class WeatherApplication:
             raise ValueError("天气接口响应格式异常")
 
         return {
+            "days": int(days),
             "timezone": str(payload.get("timezone", "")),
             "current": dict(current),
             "daily": dict(daily),
@@ -274,19 +315,31 @@ class WeatherApplication:
         precips = daily.get("precipitation_sum", [])
         codes = daily.get("weather_code", [])
 
-        today_desc = ""
-        if isinstance(codes, list) and codes:
-            today_desc = self._describe_code(codes[0])
-        today_date = dates[0] if isinstance(dates, list) and dates else ""
-        today_max = maxs[0] if isinstance(maxs, list) and maxs else None
-        today_min = mins[0] if isinstance(mins, list) and mins else None
-        today_precip = precips[0] if isinstance(precips, list) and precips else None
-
         def _num(value: object, digits: int = 1) -> str:
             try:
                 return f"{float(value):.{digits}f}"
             except (TypeError, ValueError):
                 return "?"
+
+        def _day_label(index: int) -> str:
+            if index == 0:
+                return "今日"
+            if index == 1:
+                return "明天"
+            if index == 2:
+                return "后天"
+            return f"{index}天后"
+
+        try:
+            forecast_days = int(forecast.get("days") or 1)
+        except (TypeError, ValueError):
+            forecast_days = 1
+        forecast_days = max(1, min(7, forecast_days))
+
+        def _list_item(items: object, index: int) -> object:
+            if isinstance(items, list) and index < len(items):
+                return items[index]
+            return None
 
         lines = [f"{location.display_name()}"]
         if current_time:
@@ -301,12 +354,22 @@ class WeatherApplication:
             f" 风速{_num(current_wind)}km/h"
             f" 风向{_num(current_wind_dir, 0)}°"
         )
-        if today_date:
+        for index in range(forecast_days):
+            date = _list_item(dates, index)
+            code = _list_item(codes, index)
+            temp_min = _list_item(mins, index)
+            temp_max = _list_item(maxs, index)
+            precip = _list_item(precips, index)
+            if date is None and code is None and temp_min is None and temp_max is None and precip is None:
+                continue
+            label = _day_label(index)
+            date_text = f"({date})" if date else ""
+            desc = self._describe_code(code)
             lines.append(
-                f"今日({today_date}): "
-                f"{today_desc} "
-                f"{_num(today_min)}~{_num(today_max)}℃"
-                f" 降水{_num(today_precip)}mm"
+                f"{label}{date_text}: "
+                f"{desc} "
+                f"{_num(temp_min)}~{_num(temp_max)}℃"
+                f" 降水{_num(precip)}mm"
             )
         return "\n".join(lines).strip()
 
@@ -330,11 +393,16 @@ class WeatherApplication:
             },
             method="GET",
         )
-        try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
-                raw = response.read()
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            raise OSError(f"HTTP 请求失败: {exc}") from exc
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=self._timeout_seconds) as response:
+                    raw = response.read()
+                break
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                if attempt < 1:
+                    time.sleep(0.4)
+                    continue
+                raise OSError(f"HTTP 请求失败: {exc}") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -351,19 +419,32 @@ def _has_cjk(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
-def _normalize_city_name(raw: str) -> str:
+def _clean_city_text(raw: str) -> str:
     text = (raw or "").strip().replace("\u3000", " ")
     text = " ".join(text.split())
+    return text
+
+
+def _strip_city_suffixes(text: str) -> str:
+    current = _clean_city_text(text)
     while True:
         removed = False
         for suffix in _CITY_SUFFIXES:
-            if text.endswith(suffix) and len(text) > len(suffix):
-                text = text[: -len(suffix)].strip()
+            if current.endswith(suffix) and len(current) > len(suffix):
+                current = current[: -len(suffix)].strip()
                 removed = True
                 break
         if not removed:
             break
-    return text
+    return current
+
+
+def _canonical_city_key(raw: str) -> str:
+    return _strip_city_suffixes(raw)
+
+
+def _normalize_city_name(raw: str) -> str:
+    return _canonical_city_key(raw)
 
 
 def _rank_geocode_result(item: dict[str, Any]) -> tuple[int, int, float]:

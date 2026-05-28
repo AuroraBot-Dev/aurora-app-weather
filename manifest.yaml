@@ -3,7 +3,7 @@ name: 天气应用
 version: 0.1.0
 brain_version: ">=4.1.0"
 app_desc: >-
-  提供天气查询能力：输入城市名称，返回当前位置的实时天气与今日概览。
+  提供天气查询能力：输入城市名称，返回该地点的实时天气与今日概览。
 commands:
   - name: get_weather
     description: 查询指定城市的实时天气与今日概览（默认使用启动参数 default_city）。
