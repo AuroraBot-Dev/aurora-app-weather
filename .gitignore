@@ -36,6 +36,7 @@ htmlcov/
 .coverage.*
 coverage.xml
 .pytest_cache/
+.ruff_cache/
 
 # Project data
 logs/

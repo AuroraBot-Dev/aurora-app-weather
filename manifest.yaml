@@ -1,45 +1,8 @@
+# 说明性元数据；Host 只从 config/apps.toml 启动并通过 tools/list 发现工具。
 package: im.polaris.weather
-name: 天气应用
-version: 0.1.0
-brain_version: ">=4.1.0"
-app_desc: >-
-  提供天气查询能力：输入城市名称，返回该地点的实时天气与今日概览。
-commands:
-  - name: get_weather
-    description: 查询指定城市的实时天气与今日概览（默认使用启动参数 default_city）。
-    parameters:
-      city:
-        type: string
-        description: 城市名称（可为空，使用默认城市）
-        required: false
-      days:
-        type: number
-        description: 预报天数（1-7）
-        required: false
-      session_id:
-        type: string
-        description: 可选会话 ID（用于事件回溯）
-        required: false
-      emit_event:
-        type: boolean
-        description: 是否发出 weather.reported 事件（为空则使用启动参数 emit_event）
-        required: false
-    returns:
-      ok:
-        type: boolean
-        description: 是否查询成功
-      city:
-        type: string
-        description: 实际使用的城市入参
-      location:
-        type: string
-        description: 解析后的地点显示名
-      report:
-        type: string
-        description: 可直接对用户展示的天气文本
-      forecast:
-        type: object
-        description: 结构化天气数据（包含 current 与 daily）
-      error:
-        type: string
-        description: 错误信息（ok=false 时）
+name: 天气
+version: 2.0.0
+type: mcp-server
+mcp:
+  transport: stdio
+  entry: mcp_server.py
